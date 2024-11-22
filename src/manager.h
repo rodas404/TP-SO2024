@@ -9,20 +9,20 @@
 
 
 typedef struct Topico{
-    char nome[TAM_TOP];
+    char nome[TAM_USR_TOP];
     int status;
-    pMensagens mensagens;
+    
 } topico;
 
 
 typedef struct Mensagem{
     char conteudo[TAM_MSG];
-    char autor[TAM_USR];
+    char autor[TAM_USR_TOP];
     int tempExp;
 } mensagem, *pMensagens;
 
 typedef struct{
-    char username[TAM_USR];
+    char username[TAM_USR_TOP];
     int pid;
     char np_cliente[50];
 } User;
