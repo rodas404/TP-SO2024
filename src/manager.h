@@ -6,6 +6,7 @@
 #define MAX_USERS 10
 #define MAX_TOPICS 20
 #define MAX_MSG_PST 5
+#define MAX_BUFFER 256
 
 
 typedef struct Topico{
@@ -27,4 +28,8 @@ typedef struct{
     char np_cliente[50];
 } User;
 
+typedef struct {
+    char topic_name[MAX_BUFFER];
+    int locked; // 0: desbloqueado, 1: bloqueado
+} Topic;
 #endif

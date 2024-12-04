@@ -5,11 +5,41 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <pthread.h>
 #include <sys/wait.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 
 #include "feed.h"
+
+#define MAX_BUFFER 256
+int running = 1;
+char npCliente[50];
+
+// --------- Thread para receber mensagens do manager
+void *listen_manager(void *arg) {
+    int fd_feed = open(npCliente, O_RDWR);
+    if (fd_feed == -1) {
+        perror("Erro ao abrir FIFO do feed\n");
+        exit(1);
+    }
+
+    char buffer[MAX_BUFFER];
+    while (running && read(fd_feed, buffer, sizeof(buffer)) > 0) {
+        printf("\nMensagem do manager: %s\n", buffer);
+    }
+
+    close(fd_feed);
+    return NULL;
+}
+
+//---------- Signal para terminar o feed quando o manager terminar
+void handle_signal_close(int sig) {
+    if (sig == SIGUSR1) {
+        printf("\nNotificação: O manager encerrou. A terminar o feed...\n");
+        running = 0;
+    }
+}
 
 void handler_sigalrm(int s, siginfo_t *i, void *v) {
     printf("\nAté à proxima!\n");
@@ -79,6 +109,7 @@ int validaComando(char *command){
             else if(strlen(token) > TAM_USR_TOP) flag = 2;
             break;
         case 4: //exit
+            running = 0;
             kill(getpid(), SIGINT);
     }
 
@@ -98,6 +129,7 @@ int validaComando(char *command){
     }
     return -1;
 }
+
 void organizaComando(char *str) { 
     int n = strlen(str);
     int i, j = 0;
@@ -124,10 +156,12 @@ void organizaComando(char *str) {
 }
 
 int main(int argc, char *argv[]){
+
     setbuf(stdout, NULL);
 
     userRequest request;
-    char npCliente[50];
+    loginRequest login; 
+
     int fs, fc, size, nBytes;
     char comando[350];
 
@@ -136,8 +170,88 @@ int main(int argc, char *argv[]){
     sa.sa_flags = SA_RESTART | SA_SIGINFO;
     sigaction(SIGINT, &sa, NULL);
 
+
+    /*Função para verficar se o manager está em execução */
+	if(access(NPSERVER, F_OK) != 0){
+        printf("[ERRO] O manager nao se encontra em execucao. \n");
+        exit(2);
+	}
+
+    /* Inicializar o feed (login) */
+    if (argc != 2) {
+        fprintf(stderr, "Uso: %s <username>\n", argv[0]);
+        exit(1);
+    }
+ 
+    // Sinal para notificações do manager
+    signal(SIGUSR1, handle_signal_close);
+
+    strcpy(login.username,argv[1]);
+    login.pid = getpid(); //Talvez já nem faça muito sentido isso, mas vou manter aqui por enquanto, até falarmos
+	sprintf(npCliente,NPCLIENT,login.pid);
+
+    // se access != 0, FIFO nao existe, entao cria o fifo com pid
+	if(access(npCliente,F_OK) != 0){
+	   mkfifo(npCliente, 0600);
+	}
+    else{
+        perror("Erro ao criar FIFO");
+        exit(EXIT_FAILURE);
+    }
+
+    /* Enviar login para o manager */  
+    fs = open(NPSERVER, O_WRONLY);
+    if (fs == -1) {
+        perror("Erro ao conectar ao manager\n");
+        exit(1);
+    }
+
+     printf("[INFO] Conectado ao servidor.\n"); //debug
+
+   /*
+    char init_message[MAX_BUFFER];
+    snprintf(init_message, MAX_BUFFER, "LOGIN %s %s", login.username, npCliente);
+    write(fs, init_message, strlen(init_message) + 1);
+    */
+    request.type = 5; 
+    request.pid = getpid(); 
+    snprintf(request.content, sizeof(request.content), "LOGIN %s %s", login.username, npCliente);
+
+    if (write(fs, &request, sizeof(userRequest)) == -1) {
+        perror("Erro ao enviar login para o servidor\n");
+        close(fs);
+        unlink(npCliente);
+        exit(1);
+    }
+
+
+    /*Lê a resposta do manager*/
+    fc = open(npCliente, O_RDWR);
+    if (fc == -1) {
+        perror("Erro ao abrir FIFO exclusivo do cliente");
+        exit(1);
+    }
+
+    char response[MAX_BUFFER];
+    read(fc, response, sizeof(response));
+    if (strcmp(response, "LOGIN_SUCESSO") != 0) {
+        printf("Erro: %s\n", response);
+        close(fs);
+        unlink(npCliente);
+        exit(1);
+    }
+    printf("%s\n", response); 
+   // close(fc);
+
+    printf(" Seja bem-vindo(a) '%s'. Programa pronto para comandos.\n", login.username);
+
+    // Thread para ler mensagens do manager
+    pthread_t listener_thread;
+    pthread_create(&listener_thread, NULL, listen_manager, NULL);
+
+
     do{
-    printf("comando: ");
+    printf("Comando: ");
     fgets(comando, sizeof(comando), stdin); //isto ta com buffer overflow, sendo que nem é suposto ter mas prontos
     organizaComando(comando);
     
@@ -157,6 +271,13 @@ int main(int argc, char *argv[]){
         close(fs);
 
     }
-    }while(1);
+    }while(running);
+
+    pthread_cancel(listener_thread);
+    pthread_join(listener_thread, NULL);
+
+    close(fc);
+    unlink(npCliente);
+
     return 0;
 }
