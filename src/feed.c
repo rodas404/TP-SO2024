@@ -26,11 +26,11 @@ void *listen_manager(void *arg) {
 
     char buffer[MAX_BUFFER];
     while (running && read(fd_feed, buffer, sizeof(buffer)) > 0) {
-        printf("\nMensagem do manager: %s\n", buffer);
+        printf("\n<MANAGER>: %s\n", buffer);
     }
 
     close(fd_feed);
-    return NULL;
+    pthread_exit(NULL);
 }
 
 //---------- Signal para terminar o feed quando o manager terminar
@@ -42,6 +42,7 @@ void handle_signal_close(int sig) {
 }
 
 void handler_sigalrm(int s, siginfo_t *i, void *v) {
+    unlink(npCliente);
     printf("\nAté à proxima!\n");
     exit(1);
 }
@@ -226,7 +227,7 @@ int main(int argc, char *argv[]){
 
 
     /*Lê a resposta do manager*/
-    fc = open(npCliente, O_RDWR);
+    fc = open(npCliente, O_RDONLY);
     if (fc == -1) {
         perror("Erro ao abrir FIFO exclusivo do cliente");
         exit(1);
@@ -241,7 +242,7 @@ int main(int argc, char *argv[]){
         exit(1);
     }
     printf("%s\n", response); 
-   // close(fc);
+    close(fc);
 
     printf(" Seja bem-vindo(a) '%s'. Programa pronto para comandos.\n", login.username);
 
@@ -251,12 +252,11 @@ int main(int argc, char *argv[]){
 
 
     do{
-    printf("Comando: ");
-    fgets(comando, sizeof(comando), stdin); //isto ta com buffer overflow, sendo que nem é suposto ter mas prontos
-    organizaComando(comando);
-    
-    request.type = validaComando(comando);
-
+    printf("> ");
+    if (fgets(comando, sizeof(comando), stdin)) {
+                organizaComando(comando);
+                request.type = validaComando(comando);
+            }
     if(request.type != -1){
         request.pid = getpid();
         strcpy(request.content, comando);
@@ -273,7 +273,7 @@ int main(int argc, char *argv[]){
     }
     }while(running);
 
-    pthread_cancel(listener_thread);
+
     pthread_join(listener_thread, NULL);
 
     close(fc);

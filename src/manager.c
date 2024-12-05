@@ -26,7 +26,7 @@ userRequest request;
 
 void handler_sigalrm(int s, siginfo_t *i, void *v) {
     unlink(NPSERVER);
-    printf("Servidor encerrado\n");
+    printf("\nServidor encerrado\n");
     exit(1);
 }
 
@@ -72,6 +72,7 @@ int add_user(char *username, pid_t pid) {
     // Se tudo Ok, adiciona o utilizador à lista
     strcpy(users[num_users].username, username);
     users[num_users].pid = pid;
+    sprintf(users[num_users].np_cliente, NPCLIENT, pid);
     num_users++;
     return 0;  // Login realizado com sucesso
 }
@@ -85,7 +86,7 @@ void handle_login(userRequest request) {
     sscanf(request.content, "LOGIN %s %s", username, fifo_name);
 
     // Verifica se é possível adicionar user
-    int result = add_user(username, getpid());
+    int result = add_user(username, request.pid);
 
     // Abre o FIFO do utilizador para enviar a resposta
     int fd_feed = open(fifo_name, O_WRONLY);
@@ -100,6 +101,7 @@ void handle_login(userRequest request) {
     } else if (result == -1) {
         snprintf(response, MAX_BUFFER, "LOGIN_ERRO: Limite de utilizadores atingido");
     } else if (result == -2) {
+        printf("%s\n", username);
         snprintf(response, MAX_BUFFER, "LOGIN_ERRO: Utilizador já inscrito");
     }
 
@@ -187,7 +189,7 @@ void *listen_logins(void *arg) {
         }
     }
 
-    return NULL;
+    pthread_exit(NULL);
 }
 
 // Envia mensagem para um feed específico
@@ -212,17 +214,18 @@ void remove_user(const char *username) {
     for (int i = 0; i < num_users; i++) {
         if (strcmp(users[i].username, username) == 0) {
             send_message(users[i].np_cliente, "Foste removido pelo administrador. O programa irá encerrar.");
-            printf("Utilizador '%s' removido.\n", username);
+            sleep(2);
+            kill(users[i].pid, SIGINT);
+            printf("Utilizador '%s' removido.\n", users[i].username);
 
-            // Notifica os outros feeds
             for (int j = 0; j < num_users; j++) {
-                if (j != i) {
+                 if (j != i) {
                     char notification[MAX_BUFFER];
-                    snprintf(notification, MAX_BUFFER, "Utilizador '%s' foi removido.", username);
+                     snprintf(notification, MAX_BUFFER, "Utilizador '%s' foi removido.", username);
                     send_message(users[j].np_cliente, notification);
-                }
-            }
-
+                 }
+             }
+    
             // Remove o utilizador da lista
             for (int j = i; j < num_users - 1; j++) {
                 users[j] = users[j + 1];
@@ -258,6 +261,7 @@ void toggle_topic_lock(const char *topic_name, int lock) {
 void close_program() {
     for (int i = 0; i < num_users; i++) {
         send_message(users[i].np_cliente, "O manager foi encerrado. O programa irá terminar.\n");
+        kill(users[i].pid, SIGUSR1);
     }
 }
 
@@ -290,7 +294,6 @@ int validaComando(char *command){
         return -1;
     }
 
-    printf("%s",token); 
     switch(ind){
         case 0: //users
             printf("Entrou aqui\n"); 
@@ -298,7 +301,10 @@ int validaComando(char *command){
             break;
         case 1: //remove
             token = strtok(NULL, SPACE); //topic
-            if (token == NULL) flag = 0;
+            if (token == NULL){ 
+                flag = 0;
+                break;
+            }
             remove_user(token);
             break;
         case 2: //topics
@@ -371,7 +377,7 @@ int main(){
     }
 
     // Aguarda pela thread antes de continuar
-     while (!ready) usleep(1000);
+     while (!ready) sleep(1);
 
     printf("[INFO] Servidor pronto para receber logins\n"); //para debug 
 
@@ -446,7 +452,6 @@ int main(){
     }*/
 
     // Encerra thread de login
-    pthread_cancel(login_thread);
     pthread_join(login_thread, NULL);
 
     close(fs);

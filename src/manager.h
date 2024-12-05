@@ -8,14 +8,6 @@
 #define MAX_MSG_PST 5
 #define MAX_BUFFER 256
 
-
-typedef struct Topico{
-    char nome[TAM_USR_TOP];
-    int status;
-    
-} topico;
-
-
 typedef struct Mensagem{
     char conteudo[TAM_MSG];
     char autor[TAM_USR_TOP];
