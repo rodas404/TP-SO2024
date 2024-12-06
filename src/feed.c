@@ -44,6 +44,7 @@ void handle_signal_close(int sig) {
 void handler_sigalrm(int s, siginfo_t *i, void *v) {
     unlink(npCliente);
     printf("\nAté à proxima!\n");
+    sleep(2);
     exit(1);
 }
 
@@ -67,7 +68,7 @@ int validaComando(char *command){
         } 
     }
 
-    if(flag == 0){
+    if(!flag){
         printf("Comando invalido!\n");
         printf("Comandos disponiveis:\n");
         for(ind = 0; ind < num_comms; ind++)
@@ -85,7 +86,7 @@ int validaComando(char *command){
                 break;
             }
             else if(strlen(token) > TAM_USR_TOP){
-                flag = 2;
+                flag = -1;
                 break;
             }
             token = strtok(NULL, SPACE); //duracao
@@ -101,34 +102,34 @@ int validaComando(char *command){
             if(token == NULL)
                 flag = 0;
             else if (strlen(token) > TAM_MSG)
-                flag = 3;    
+                flag = -2;    
             break;
         case 2: //subscribe
         case 3: //unsubscribe
             token = strtok(NULL, SPACE);
             if (token == NULL) flag = 0;
-            else if(strlen(token) > TAM_USR_TOP) flag = 2;
+            else if(strlen(token) > TAM_USR_TOP) flag = -2;
             break;
         case 4: //exit
             running = 0;
             kill(getpid(), SIGINT);
     }
 
-    switch(flag){ //vou mudar isto depois que isto ta feio
-        case 0:
+    if(flag == 1){
+        return ind;
+    }
+    else{
+        if(flag == 0){
             printf("Sintaxe incorreta!\n");
             printf("Instruções: %s\n", comms_guide[ind]);
-            break;
-        case 1: 
-            return ind;
-        case 2: 
+        }
+        else if(flag == -1)
             printf("Excedido limite de caracteres (%d) para o tópico.\n", TAM_USR_TOP);
-            break;
-        case 3: 
+        else if(flag == -2)
             printf("Excedido limite de caracteres (%d) para a mensagem.\n", TAM_MSG);
-            break;
+        
+        return -1;
     }
-    return -1;
 }
 
 void organizaComando(char *str) { 
