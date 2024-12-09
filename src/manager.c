@@ -12,24 +12,100 @@
 
 #include "manager.h"
 
-#define MAX_BUFFER 256
-
 User users[MAX_USERS]; //Lista de utilizadores
 int  num_users = 0; //utilizadores ativos 
-
-volatile int ready = 0; //Para ver se a thread está pronta
 
 Topic topics[MAX_TOPICS];
 int topic_count = 0;
 
-tdados td[2]; //globalmente para poder chama la atraves da função close_program, mas nao estou a conseguir encerrar as threads corretamente, só encerra apos o manager executar um comando
-
+pthread_t thread[2]; // a segunda thread será para o contador
+tdados td[2]; 
+int ready = 0; //Para ver se a thread está pronta
 
 void handler_sigalrm(int s, siginfo_t *i, void *v) {
-    unlink(NPSERVER);
+    close_program();
+    if(unlink(NPSERVER) == -1)
+        perror("Erro ao remover FIFO do servidor.");
     printf("\nServidor encerrado\n");
     sleep(1);
     exit(1);
+}
+
+
+void acorda(int s, siginfo_t *info, void *c){} // utilizar para fechar thread
+
+// Encerra o programa
+void close_program() {
+    td[0].stop=1; 
+    if(pthread_kill(thread[0], SIGUSR1) != 0)
+        perror("Erro ao enviar sinal para a thread.");
+
+    for (int i = 0; i < num_users; i++) {
+        send_message(users[i].np_cliente, "<MANAGER> O manager foi encerrado. O programa irá terminar.");
+        kill(users[i].pid, SIGINT);
+    }
+}
+
+//thread para os comandos do feed
+void *listen(void *dados) {
+    tdados *pdados = (tdados*)dados;
+
+    pdados->fs = open(NPSERVER, O_RDWR);
+    if (pdados->fs == -1) {
+        perror("Erro ao abrir FIFO do manager");
+        exit(EXIT_FAILURE);
+    }
+
+    printf("[INFO] Thread de login iniciada\n");
+    userRequest request;
+    ready = 1;
+
+    do{
+       int size = read(pdados->fs, &request, sizeof(userRequest));
+            if(size > 0){
+                printf("Recebido: %s (%d)\n", request.content, request.type); 
+                switch(request.type){
+                    case 0: //funcao topics
+                            handle_topics(request.pid);
+                            break;
+                    case 1: //funcao msg  
+                            handle_message(request);        
+                            break;
+                    case 2: //funcao subscribe
+                            handle_subscribe(request);
+                            break;
+                    case 3: //funcao unsubscribe
+                            handle_unsubscribe(request);
+                            break;
+                    case 4:
+                        handle_exit(request.pid); 
+                        break;
+                    case 5: //login    
+                        handle_login(request);
+                        break; 
+                }
+            }
+    }while(pdados->stop == 0);
+
+    if(close(pdados->fs) == -1)
+        perror("Erro ao fechar FIFO");
+    pthread_exit(NULL);
+}
+
+
+void handle_topics(int pid) {
+    char npfifo[50];
+    sprintf(npfifo, NPCLIENT, pid);
+    char message[TAM_BUFFER];
+
+    send_message(npfifo, "Tópicos:");
+    for (int i = 0; i < topic_count; i++) {
+        snprintf(message, sizeof(message), "- %s", topics[i].topic_name);
+        if(!send_message(npfifo, message)){
+            printf("Erro ao enviar mensagem ao user nº%d", pid);
+            exit(EXIT_FAILURE);
+        }
+    }
 }
 
 void organizaComando(char *str) { 
@@ -57,7 +133,7 @@ void organizaComando(char *str) {
     str[(i == 0 ? i : i-1)] = '\0';
 }
 // --------- Função para adicionar utilizador
-int add_user(char *username, pid_t pid) {
+int add_user(char *username, int pid) {
     if (num_users >= MAX_USERS) {
         return -1;  // Limite de utilizadores atingido
     }
@@ -75,17 +151,21 @@ int add_user(char *username, pid_t pid) {
     strcpy(users[num_users].username, username);
     users[num_users].pid = pid;
     sprintf(users[num_users].np_cliente, NPCLIENT, pid);
+    users[num_users].n_subs = 0;
     num_users++;
     return 0;  // Login realizado com sucesso
 }
 
 // Função para tratar o login
 void handle_login(userRequest request) {
-    char username[50];
-    char fifo_name[100];
+    char username[TAM_USR_TOP];
+    char fifo_name[20];
 
     // Extrai o nome do utilizador e o nome do FIFO 
-    sscanf(request.content, "LOGIN %s %s", username, fifo_name);
+    if(sscanf(request.content, "LOGIN %s %s", username, fifo_name) == -1){
+        printf("Erro ao extrair o nome de utilizador e fifo.");
+        return;
+    }
 
     // Verifica se é possível adicionar user
     int result = add_user(username, request.pid);
@@ -97,30 +177,46 @@ void handle_login(userRequest request) {
         return;
     }
 
-    char response[MAX_BUFFER];
+    char response[TAM_BUFFER];
     if (result == 0) {
-        snprintf(response, MAX_BUFFER, "LOGIN_SUCESSO");
+        sprintf(response, "LOGIN_SUCESSO");
     } else if (result == -1) {
-        snprintf(response, MAX_BUFFER, "LOGIN_ERRO: Limite de utilizadores atingido");
+        sprintf(response, "LOGIN_ERRO: Limite de utilizadores atingido");
     } else if (result == -2) {
         printf("%s\n", username);
-        snprintf(response, MAX_BUFFER, "LOGIN_ERRO: Utilizador já inscrito");
+        sprintf(response, "LOGIN_ERRO: Utilizador já inscrito");
     }
 
-    write(fd_feed, response, strlen(response) + 1);
-    close(fd_feed);
+    if(write(fd_feed, response, strlen(response) + 1) == -1){
+        printf("Erro ao escrever mensagem.\n");
+        kill(getpid(), SIGINT);
+    }
+    if(close(fd_feed) == -1){
+        perror("Erro ao fechar FIFO");
+        kill(getpid(), SIGINT);
+    }
 
     printf("[INFO:] Utilizador: %s -  %s\n", username, response);
     
 }
 
 // Envia mensagem para um feed específico
-void send_message(const char *fifo_name, const char *message) {
+int send_message(const char *fifo_name, const char *message) {
     int fd = open(fifo_name, O_WRONLY);
-    if (fd != -1) {
-        write(fd, message, strlen(message) + 1);
-        close(fd);
+    if (fd == -1) {
+        perror("Erro ao abrir FIFO.");
+        return 0;
     }
+    int size = write(fd, message, strlen(message) + 1);
+    if(size == -1){
+        perror("Erro ao escrever mensagem.");
+        return 0;
+    }
+    if(close(fd) == -1){
+        perror("Erro ao fechar FIFO.");
+        return 0;    
+    }
+  return 1;
 }
 
 //obtem username atraves do pid
@@ -130,11 +226,17 @@ char* get_username_by_pid(int pid) {
             return users[i].username;
         }
     }
+    return NULL;
 }
 
 //armazena mensagens persistentes
 int armazena_messagem(const char *topic, int duracao, const char *msg, int pid) {
     char *username = get_username_by_pid(pid);
+    if(username == NULL){
+        printf("Não foi possivel encontrar o username do nº%d.", pid);
+        return -1;
+    }
+
     for (int i = 0; i < topic_count; i++) {
         if (strcmp(topics[i].topic_name, topic) == 0) {
             if (topics[i].n_msgs >= MAX_MSG_PST)
@@ -166,6 +268,7 @@ int add_topic(const char *topic) {
         // Adiciona o novo tópico
         strcpy(topics[topic_count].topic_name, topic);
         topics[topic_count].locked = 0; 
+        topics[topic_count].n_msgs = 0;
         topic_count++; 
     }
     return 1;
@@ -179,20 +282,56 @@ void handle_message(userRequest request){
     if(!res){
         char npfifo[50];
         sprintf(npfifo, NPCLIENT, request.pid);
-        send_message(npfifo, "Não foi possível enviar a sua mensagem, dado que foi atingido o número máximo de tópicos.");
+        send_message(npfifo, " <MANAGER> Não foi possível enviar a sua mensagem, dado que foi atingido o número máximo de tópicos.");
         return;
     }
     int duracao = atoi(strtok(NULL, SPACE));
     char *msg = strtok(NULL, "\0");
+    
+    Topic *topic_ptr = find_topic(topic);
+    if (topic_ptr->locked) {
+        char npfifo[50];
+        sprintf(npfifo, NPCLIENT, request.pid);
+        send_message(npfifo, "<MANAGER> Não foi possivel enviar a sua mensagem, dado que o tópico em causa encontra-se bloqueado.");
+        return;
+    }
+
     if(duracao > 0)
         armazena_messagem(topic, duracao, msg, request.pid);
+
+    for (int i = 0; i < num_users; i++) {
+        if (users[i].pid == request.pid) {
+            int already_subscribed = 0;
+            for (int j = 0; j < users[i].n_subs; j++) {
+                if (users[i].subs[j] == topic_ptr) {
+                    already_subscribed = 1;
+                    break;
+                }
+            }
+            if (!already_subscribed) {
+                if (users[i].n_subs < MAX_TOPICS) {
+                    users[i].subs[users[i].n_subs] = topic_ptr;
+                    users[i].n_subs++;
+                    printf("Utilizador '%s' subscrito ao tópico '%s'.\n", users[i].username, topic);
+                } else 
+                    printf("Utilizador '%s' atingiu o limite de subscrições.\n", users[i].username);
+            }
+            break;
+        }
+    }
     
     char *username = get_username_by_pid(request.pid);
-    char message[MAX_BUFFER];
-    snprintf(message, sizeof(message), "<%s> %s - %s", topic, username, msg);
-    for(int i=0; i<num_users; i++){
-        if(users[i].pid != request.pid) 
-            send_message(users[i].np_cliente, message);
+    char message[TAM_BUFFER];
+    sprintf(message, "<%s> %s - %s", topic, username, msg);
+    for (int i = 0; i < num_users; i++) {
+        if (users[i].pid != request.pid) {
+            for (int j = 0; j < users[i].n_subs; j++) {
+                if (strcmp(users[i].subs[j]->topic_name, topic) == 0) {
+                    send_message(users[i].np_cliente, message);
+                    break;
+                }
+            }
+        }
     }
 }
 
@@ -210,52 +349,110 @@ void show_messages(char *topico){
     printf("Topico '%s' não foi encontrado.\n", topico);
 }
 
-//thread para os comandos do feed
-void *listen(void *dados) {
-    tdados *pdados = (tdados*)dados;
 
-    pdados->fs = open(NPSERVER, O_RDONLY);
-    if (pdados->fs == -1) {
-        perror("Erro ao abrir FIFO do manager");
-        exit(EXIT_FAILURE);
-    }
 
-    printf("[INFO] Thread de login iniciada\n");
-    userRequest request;
-    ready = 1;
+void handle_unsubscribe(userRequest request){
+    strtok(request.content, SPACE);
+    char *topic = strtok(NULL, SPACE);
 
-    do{
-       int size = read(pdados->fs, &request, sizeof(userRequest));
-            if(size > 0){
-                printf("Mensagem Recebida: %s (%d)\n", request.content, request.type); 
-                switch(request.type){
-                    case 0: //funcao topics
-                    case 1: //funcao msg  
-                            handle_message(request);        
-                            break;
-                    case 2: //funcao subscribe
-                            break;
-                    case 3: //funcao unsubscribe
-                            break;
-                    case 4: break;
-                    case 5: //login    
-                        handle_login(request);
-                        break; 
+    for (int i = 0; i < num_users; i++) {
+        if (users[i].pid == request.pid) {
+            for (int j = 0; j < users[i].n_subs; j++) {
+                if (strcmp(users[i].subs[j]->topic_name, topic) == 0) {
+                    for (int k = j; k < users[i].n_subs - 1; k++) {
+                        users[i].subs[k] = users[i].subs[k + 1];
+                    }
+                    users[i].n_subs--;
+                    printf("Utilizador '%s' removeu a sua subscrição ao tópico '%s'.\n", users[i].username, topic);
+                    return;
                 }
             }
-    }while(pdados->stop == 0);
-    printf("ADIOS\n");
-    close(pdados->fs);
-    pthread_exit(NULL);
+            printf("Utilizador '%s' não está subscrito ao tópico '%s'.\n", users[i].username, topic);
+            return;
+        }
+    }
+}
+
+void handle_subscribe(userRequest request) {
+    strtok(request.content, SPACE);
+    char *topic = strtok(NULL, SPACE);
+
+    // Adiciona o tópico se não existir
+    int res = add_topic(topic);
+    if (!res) {
+        char npfifo[50];
+        sprintf(npfifo, NPCLIENT, request.pid);
+        send_message(npfifo, "<MANAGER> Não foi possível adicionar o tópico, dado que foi atingido o número máximo de tópicos.");
+        return;
+    }
+
+    Topic *topic_ptr = find_topic(topic);
+    if(topic_ptr == NULL){
+        printf("Topico nao encontrado.\n");
+        return;
+    }
+
+    // Adiciona o tópico às subscrições do user
+    for (int i = 0; i < num_users; i++) {
+        if (users[i].pid == request.pid) {
+            if (users[i].n_subs >= MAX_TOPICS) {
+                printf("Utilizador '%s' atingiu o limite de subscrições.\n", users[i].username);
+                return;
+            }
+            users[i].subs[users[i].n_subs] = topic_ptr;
+            users[i].n_subs++;
+            printf("Utilizador '%s' subscreveu ao tópico '%s'.\n", users[i].username, topic);
+            break;
+        }
+    }
+
+    // Envia todas as mensagens persistentes do tópico ao user
+    send_topic_messages(topic_ptr, request.pid);
 }
 
 
+Topic* find_topic(const char *topic_name) {
+    for (int i = 0; i < topic_count; i++) {
+        if (strcmp(topics[i].topic_name, topic_name) == 0) {
+            return &topics[i];
+        }
+    }
+    return NULL;
+}
+
+void send_topic_messages(Topic *topic_ptr, int pid) {
+    char npfifo[50];
+    sprintf(npfifo, NPCLIENT, pid);
+    for (int j = 0; j < topic_ptr->n_msgs; j++) {
+        char message[350];
+        sprintf(message, "<%s> %s - %s", topic_ptr->topic_name, topic_ptr->mensagens[j].autor, topic_ptr->mensagens[j].conteudo);
+        if(send_message(npfifo, message) == 0){
+            printf("Erro ao enviar mensagem ao user nº%d", pid);
+            return;
+        }
+    }
+}
+
+void handle_exit(int pid) {
+    for (int i = 0; i < num_users; i++) {
+        if (users[i].pid == pid) {
+            printf("User '%s' offline.\n", users[i].username);
+            kill(users[i].pid, SIGINT);
+            for (int j = i; j < num_users - 1; j++) {
+                users[j] = users[j + 1];
+            }
+            num_users--;          
+            return;
+        }
+    }
+    printf("Utilizador nº%d não encontrado.\n", pid);
+}
 
 // Lida com o comando "users"
 void list_users() {
     printf("Utilizadores ativos:\n");
     for (int i = 0; i < num_users; i++) {
-        printf("- %s\n", users[i].username);
+        printf("- %s (%d)\n", users[i].username, users[i].pid);
     }
 }
 
@@ -263,16 +460,18 @@ void list_users() {
 void remove_user(const char *username) {
     for (int i = 0; i < num_users; i++) {
         if (strcmp(users[i].username, username) == 0) {
-            send_message(users[i].np_cliente, "Foste removido pelo administrador. O programa irá encerrar.");
-            sleep(1);
+            if(send_message(users[i].np_cliente, "<MANAGER> Foste removido pelo administrador. O programa irá encerrar.") == 0)
+                printf("Erro ao enviar mensagem ao user '%s'.\n", users[i].username);
             kill(users[i].pid, SIGINT);
+            sleep(1);
             printf("Utilizador '%s' removido.\n", users[i].username);
 
             for (int j = 0; j < num_users; j++) {
                  if (j != i) {
-                    char notification[MAX_BUFFER];
-                    snprintf(notification, MAX_BUFFER, "Utilizador '%s' foi removido.", username);
-                    send_message(users[j].np_cliente, notification);
+                    char notification[TAM_BUFFER];
+                    sprintf(notification, "Utilizador '%s' foi removido.", username);
+                    if(send_message(users[j].np_cliente, notification) == 0)
+                        printf("Erro ao enviar notificação ao user '%s'.\n", users[j].username);
                  }
              }
     
@@ -307,14 +506,7 @@ void toggle_topic_lock(const char *topic_name, int lock) {
     printf("Tópico '%s' não encontrado.\n", topic_name);
 }
 
-// Encerra o programa
-void close_program() {
-    td[0].stop=1; 
-    for (int i = 0; i < num_users; i++) {
-        send_message(users[i].np_cliente, "O manager foi encerrado. O programa irá terminar.\n");
-        kill(users[i].pid, SIGINT);
-    }
-}
+
 
 //comandos manager
 int validaComando(char *command){
@@ -385,7 +577,6 @@ int validaComando(char *command){
             toggle_topic_lock(token, 0);
             break;
         case 6: //close
-            close_program(); 
             kill(getpid(), SIGINT);
             break; 
     }
@@ -410,34 +601,40 @@ int main(){
     sa.sa_flags = SA_RESTART | SA_SIGINFO;
     sigaction(SIGINT, &sa, NULL);
 
+    struct sigaction act;
+    act.sa_sigaction=acorda;
+  	sigaction(SIGUSR1,&act,NULL); //sinal para fechar thread
+
     if (access(NPSERVER, F_OK) != 0) {
         if (mkfifo(NPSERVER, 0666) == -1) {
             perror("Erro ao abrir servidor");
             exit(EXIT_FAILURE);
         } 
-        else {
+        else 
             printf("Servidor aberto com sucesso.\n");
-        }
     } else {
         printf("Servidor já se encontra aberto\n");
         exit(EXIT_FAILURE);
     }
 
-    pthread_t thread[2]; // a segunda thread será para o contador
+    
     pthread_mutex_t mutex;
-    pthread_mutex_init(&mutex, NULL);
+    if (pthread_mutex_init(&mutex, NULL) != 0) {
+        perror("Erro ao inicializar o mutex");
+        exit(EXIT_FAILURE);
+    }
 
     td[0].stop = 0;
     td[0].mutex = &mutex;
 
     if (pthread_create(&thread[0], NULL, listen, &td[0]) != 0) {
-        perror("[Erro] Erro ao criar thread de login\n");
+        perror("Erro ao criar thread de login\n");
         close(fs);
         exit(EXIT_FAILURE);
     }
 
     // Aguarda pela thread antes de continuar
-    //while (!ready) sleep(1);
+    while (!ready) sleep(1);
 
     printf("[INFO] Servidor pronto para receber logins\n"); //para debug 
      while (1) {
@@ -449,27 +646,15 @@ int main(){
     }
    
     // Encerra thread de login
-    pthread_join(thread[0], NULL);
-
-    close(fs);
-    unlink(NPSERVER); 
+    if(pthread_join(thread[0], NULL) != 0) {
+        perror("Erro ao juntar a thread de notificações");
+        exit(EXIT_FAILURE);
+    }
+    if(close(fs) == -1){
+        perror("Erro ao fechar FIFO");
+        exit(EXIT_FAILURE);
+    }
+    if(unlink(NPSERVER) == -1)
+        perror("Erro ao remover FIFO do servidor."); 
     return 0;
 }
-
-
-
-
-
-
-// ---------------------------------------------- Função para mensagens recebidas do cliente
-/*void handle_message(const char* buffer) { //Percebi que dava para enviar o login como request, para evitar fazer isso
-    if (strncmp(buffer, "LOGIN:", 6) == 0) {
-        // É login
-        handle_login(buffer);
-    } else if (strncmp(buffer, "COMANDO:", 8) == 0) {
-        // É um comando normal
-        handle_command(buffer + 8); // Passa o comando sem "COMANDO"
-    } else { // Mensagem desconhecida ou algo parecido     
-        fprintf(stderr, "Mensagem desconhecida: %s\n", buffer);
-    }
-}*/

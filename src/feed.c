@@ -12,7 +12,6 @@
 
 #include "feed.h"
 
-#define MAX_BUFFER 256
 int running = 1;
 char npCliente[50];
 
@@ -24,12 +23,12 @@ void *listen_manager(void *arg) {
         exit(1);
     }
 
-    char buffer[MAX_BUFFER];
+    char buffer[TAM_BUFFER];
     while (running && read(fd_feed, buffer, sizeof(buffer)) > 0) {
-        printf("\n<MANAGER>: %s\n", buffer);
+        printf("\n%s\n", buffer);
     }
-
-    close(fd_feed);
+    if(close(fd_feed) == -1)
+        perror("Erro ao fechar FIFO do cliente."); 
     pthread_exit(NULL);
 }
 
@@ -42,9 +41,10 @@ void handle_signal_close(int sig) {
 }
 
 void handler_sigalrm(int s, siginfo_t *i, void *v) {
-    unlink(npCliente);
+    if(unlink(npCliente) == -1)
+        perror("Erro ao remover FIFO do cliente.");
     printf("\nAté à proxima!\n");
-    sleep(2);
+    sleep(1);
     exit(1);
 }
 
@@ -54,7 +54,7 @@ int validaComando(char *command){
     int num_comms = sizeof(comms_list) / sizeof(comms_list[0]);
     char *token;
 
-    char command_copy[350];
+    char command_copy[TAM_BUFFER];
     strcpy(command_copy, command);
     command_copy[sizeof(command_copy) - 1] = '\0';
 
@@ -112,7 +112,7 @@ int validaComando(char *command){
             break;
         case 4: //exit
             running = 0;
-            kill(getpid(), SIGINT);
+            break;
     }
 
     if(flag == 1){
@@ -165,7 +165,7 @@ int main(int argc, char *argv[]){
     loginRequest login; 
 
     int fs, fc, size, nBytes;
-    char comando[350];
+    char comando[TAM_BUFFER];
 
     struct sigaction sa;
     sa.sa_sigaction = handler_sigalrm;
@@ -189,7 +189,7 @@ int main(int argc, char *argv[]){
     signal(SIGUSR1, handle_signal_close);
 
     strcpy(login.username,argv[1]);
-    login.pid = getpid(); //Talvez já nem faça muito sentido isso, mas vou manter aqui por enquanto, até falarmos
+    login.pid = getpid();
 	sprintf(npCliente,NPCLIENT,login.pid);
 
     // se access != 0, FIFO nao existe, entao cria o fifo com pid
@@ -221,8 +221,10 @@ int main(int argc, char *argv[]){
 
     if (write(fs, &request, sizeof(userRequest)) == -1) {
         perror("Erro ao enviar login para o servidor\n");
-        close(fs);
-        unlink(npCliente);
+        if(close(fs) == -1)
+            perror("Erro ao fechar FIFO do servidor.");
+        if(unlink(npCliente) == -1)
+            perror("Erro ao remover FIFO do cliente.");
         exit(1);
     }
 
@@ -230,30 +232,44 @@ int main(int argc, char *argv[]){
     /*Lê a resposta do manager*/
     fc = open(npCliente, O_RDONLY);
     if (fc == -1) {
-        perror("Erro ao abrir FIFO exclusivo do cliente");
+        perror("Erro ao abrir FIFO exclusivo do cliente.");
         exit(1);
     }
 
-    char response[MAX_BUFFER];
-    read(fc, response, sizeof(response));
+    char response[TAM_BUFFER];
+    if(read(fc, response, sizeof(response)) == -1){
+        perror("Erro ao ler resposta do servidor.");
+        exit(1);
+    }
+
     if (strcmp(response, "LOGIN_SUCESSO") != 0) {
         printf("Erro: %s\n", response);
-        close(fs);
-        unlink(npCliente);
+        if(close(fs) == -1) 
+            perror("Erro ao fechar o FIFO do servidor");
+        if (unlink(npCliente) == -1) 
+            perror("Erro ao remover o FIFO do cliente.");
         exit(1);
     }
     printf("%s\n", response); 
-    close(fc);
+    
+    if(close(fc) == -1){
+        perror("Erro ao fechar FIFO exclusivo do cliente.");
+        exit(1);
+    }
 
-    printf(" Seja bem-vindo(a) '%s'. Programa pronto para comandos.\n", login.username);
+    printf("Seja bem-vindo(a) '%s'. Programa pronto para comandos.\n", login.username);
 
     // Thread para ler mensagens do manager
     pthread_t listener_thread;
-    pthread_create(&listener_thread, NULL, listen_manager, NULL);
+    if(pthread_create(&listener_thread, NULL, listen_manager, NULL) != 0){
+        perror("Erro ao criar thread de notificações.");
+        exit(1);
+    }
 
 
     do{
     printf("> ");
+    memset(comando, 0, sizeof(comando));
     if (fgets(comando, sizeof(comando), stdin)) {
                 organizaComando(comando);
                 request.type = validaComando(comando);
@@ -269,16 +285,33 @@ int main(int argc, char *argv[]){
         }
 
         nBytes = write(fs, &request, sizeof(userRequest));
-        close(fs);
+        if (nBytes == -1) {
+            perror("Erro ao escrever no FIFO do servidor");
+            close(fs);
+            exit(EXIT_FAILURE);
+        }
 
+        if (close(fs) == -1) {
+            perror("Erro ao fechar o FIFO do servidor");
+            exit(EXIT_FAILURE);
+        }
     }
     }while(running);
 
 
-    pthread_join(listener_thread, NULL);
+    if(pthread_join(listener_thread, NULL) != 0) {
+        perror("Erro ao juntar a thread de notificações");
+        exit(EXIT_FAILURE);
+    }
 
-    close(fc);
-    unlink(npCliente);
+    if(close(fc) == -1){
+        perror("Erro ao fechar o FIFO do cliente.");
+        exit(EXIT_FAILURE);
+    }
 
+    if (unlink(npCliente) == -1) {
+        perror("Erro ao remover o FIFO do cliente.");
+        exit(EXIT_FAILURE);
+    }
     return 0;
 }
