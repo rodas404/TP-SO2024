@@ -13,6 +13,10 @@
 #include "feed.h"
 
 int running = 1;
+
+int exiting = 0; 
+volatile sig_atomic_t communicated_exit = 0;
+
 char npCliente[50];
 
 // --------- Thread para receber mensagens do manager
@@ -37,15 +41,41 @@ void handle_signal_close(int sig) {
     if (sig == SIGUSR1) {
         printf("\nNotificação: O manager encerrou. A terminar o feed...\n");
         running = 0;
+        
+        printf("Fechei exit: %d", exiting); 
     }
 }
 
 void handler_sigalrm(int s, siginfo_t *i, void *v) {
-    if(unlink(npCliente) == -1)
+    if (exiting==1){
+        printf("Exiting"); 
+        return; 
+    }
+
+   if (i->si_pid == getpid()){
+      userRequest request;
+      request.type = 4;  //"exit"
+      request.pid = getpid();
+      request.exit_reason = 1; //com sigint 
+      snprintf(request.content, sizeof(request.content), "exit");
+
+      int fs = open(NPSERVER, O_WRONLY);
+      if (fs != -1) {
+          write(fs, &request, sizeof(userRequest));
+          close(fs);
+      } else {
+        perror("Erro ao comunicar saída ao servidor.");
+       }
+      
+    }else{
+        exiting = 1; 
+    }
+
+   if(unlink(npCliente) == -1)
         perror("Erro ao remover FIFO do cliente.");
-    printf("\nAté à proxima!\n");
-    sleep(1);
-    exit(1);
+      printf("\nAté à proxima!\n");
+      sleep(1);
+      exit(1);
 }
 
 int validaComando(char *command){
@@ -112,6 +142,8 @@ int validaComando(char *command){
             break;
         case 4: //exit
             running = 0;
+            exiting = 1; 
+            printf("Mudei exit: %d", exiting); 
             break;
     }
 
@@ -175,7 +207,7 @@ int main(int argc, char *argv[]){
 
     /*Função para verficar se o manager está em execução */
 	if(access(NPSERVER, F_OK) != 0){
-        printf("[ERRO] O manager nao se encontra em execucao. \n");
+        printf("[ERRO] O manager não se encontra em execução. \n");
         exit(2);
 	}
 
@@ -278,6 +310,10 @@ int main(int argc, char *argv[]){
         request.pid = getpid();
         strcpy(request.content, comando);
 
+       if (request.type == 4){
+            request.exit_reason = 0; //exit
+            exiting = 1; 
+        }
         fs = open(NPSERVER, O_WRONLY);
         if(fs == -1){
             printf("Erro ao conectar com o servidor.\n");
@@ -308,10 +344,11 @@ int main(int argc, char *argv[]){
         perror("Erro ao fechar o FIFO do cliente.");
         exit(EXIT_FAILURE);
     }
-
+  
     if (unlink(npCliente) == -1) {
         perror("Erro ao remover o FIFO do cliente.");
         exit(EXIT_FAILURE);
     }
+    
     return 0;
 }

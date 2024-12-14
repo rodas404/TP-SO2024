@@ -22,7 +22,136 @@ pthread_t thread[2]; // a segunda thread será para o contador
 tdados td[2]; 
 int ready = 0; //Para ver se a thread está pronta
 
+pthread_mutex_t topic_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+char msg_file_path[256] = ""; // Caminho para o ficheiro de mensagens
+
+// Lê as mensagens persistentes do ficheiro 
+void load_persistent_messages() {
+    FILE *file = fopen(msg_file_path, "r");
+    if (!file) {
+        if (errno != ENOENT) {
+            perror("Erro ao abrir o ficheiro de mensagens");
+            exit(EXIT_FAILURE);
+        }
+        return;
+    }
+
+    char line[512];
+    while (fgets(line, sizeof(line), file)) {
+        Mensagem msg;
+        char topic_name[TAM_USR_TOP];
+
+       if (sscanf(line, "%s %s %d %[^\n]", topic_name, msg.autor, &msg.tempExp, msg.conteudo) != 4) {
+           fprintf(stderr, "Linha mal formatada: %s", line);
+           continue;
+        }       
+        
+        // Procura o tópico correspondente
+        pthread_mutex_lock(&topic_mutex);
+        Topic *topic_ptr = find_topic(topic_name);
+        if (topic_ptr == NULL) {
+            int topic_index = add_topic(topic_name);
+            if (topic_index == 0) {
+                fprintf(stderr, "Não foi possível criar o tópico '%s'. Limite de tópicos atingido.\n", topic_name);
+                pthread_mutex_unlock(&topic_mutex);
+                continue;
+            }
+
+            topic_ptr = &topics[topic_count - 1];
+        }
+
+         // Armazena a mensagem do ficheiro para o tópico (em memória)
+        int result = recupera_mensagem(topic_name, msg.tempExp, msg.conteudo, msg.autor); 
+         if (result == 0) {
+            fprintf(stderr, "Falha ao armazenar mensagem no tópico '%s' (máximo de mensagens atingido).\n", topic_name);
+        } else {
+            printf("Mensagem carregada com sucesso no tópico '%s' por '%s'.\n", topic_name, msg.autor);
+        }
+
+        pthread_mutex_unlock(&topic_mutex);
+    }
+
+    fclose(file);
+}
+
+
+//Guarda as mensagens persistentes no ficheiro
+void save_persistent_messages() {
+    FILE *file = fopen(msg_file_path, "w");
+    if (!file) {
+        perror("Erro ao salvar o ficheiro de mensagens\n");
+        return;
+    }
+
+    pthread_mutex_lock(&topic_mutex);
+    for (int i = 0; i < topic_count; i++) {
+        Topic *topic = &topics[i];
+        for (int j = 0; j < topic->n_msgs; j++) {
+            Mensagem *msg = &topic->mensagens[j];
+            if (msg->tempExp > 0) {
+                fprintf(file, "%s %s %d %s\n", topic->topic_name, msg->autor, msg->tempExp, msg->conteudo);
+            }
+        }
+    }
+    pthread_mutex_unlock(&topic_mutex);
+
+    fclose(file);
+}
+
+//Ciclo de vida das mensagens 
+void *manage_message_lifecycle(void *arg) {
+    while (1) {
+        sleep(1); //Espera 1 seg para cada verificação
+        pthread_mutex_lock(&topic_mutex);
+        for (int i = 0; i < topic_count; i++) {
+            Topic *topic = &topics[i];
+            for (int j = 0; j < topic->n_msgs; j++) {
+                Mensagem *msg = &topic->mensagens[j];
+                if (msg->tempExp <= 0) {
+                    // Remove a mensagem se já estiver expirada
+                    remove_message(topic, j);
+                    j--; 
+                } else {
+                    // Decrementa o tempo de expiração da mensagem
+                    msg->tempExp--;
+                }
+            }
+        }
+        pthread_mutex_unlock(&topic_mutex);
+    }
+    return NULL;
+}
+
+//Inicializa o manager 
+void initialize_manager() {
+    // Se a variável não estiver definida, define 
+    if (getenv("MSG_FICH") == NULL) {
+        setenv("MSG_FICH", "./mensagens.txt", 1);   
+    }
+
+    char *env_path = getenv("MSG_FICH");
+    if (!env_path) {
+        fprintf(stderr, "Erro: Variável de ambiente MSG_FICH não definida\n");
+        exit(EXIT_FAILURE);
+    }
+    strncpy(msg_file_path, env_path, sizeof(msg_file_path) - 1);
+    msg_file_path[sizeof(msg_file_path) - 1] = '\0';
+
+    load_persistent_messages();
+}
+
+//Termina o manager guardando as mensagens e terminando o mutex 
+void finalize_manager() {
+    printf("Vim finalizar");
+    save_persistent_messages();
+    pthread_mutex_destroy(&topic_mutex);
+}
+
+
+
 void handler_sigalrm(int s, siginfo_t *i, void *v) {
+    finalize_manager();
     close_program();
     if(unlink(NPSERVER) == -1)
         perror("Erro ao remover FIFO do servidor.");
@@ -78,7 +207,7 @@ void *listen(void *dados) {
                             handle_unsubscribe(request);
                             break;
                     case 4:
-                        handle_exit(request.pid); 
+                        handle_exit(request.pid, request.exit_reason); 
                         break;
                     case 5: //login    
                         handle_login(request);
@@ -101,6 +230,7 @@ void handle_topics(int pid) {
     send_message(npfifo, "Tópicos:");
     for (int i = 0; i < topic_count; i++) {
         snprintf(message, sizeof(message), "- %s", topics[i].topic_name);
+        printf("Tópico a enviar: %s",topics[i].topic_name); 
         if(!send_message(npfifo, message)){
             printf("Erro ao enviar mensagem ao user nº%d", pid);
             exit(EXIT_FAILURE);
@@ -137,8 +267,6 @@ int add_user(char *username, int pid) {
     if (num_users >= MAX_USERS) {
         return -1;  // Limite de utilizadores atingido
     }
-
-    //Adicionar mutex aqui...
 
     // Verifica se o utilizador já existe
     for (int i = 0; i < num_users; i++) {
@@ -229,8 +357,8 @@ char* get_username_by_pid(int pid) {
     return NULL;
 }
 
-//armazena mensagens persistentes
-int armazena_messagem(const char *topic, int duracao, const char *msg, int pid) {
+//armazena mensagens em memória
+int armazena_mensagem(const char *topic, int duracao, const char *msg, int pid) {
     char *username = get_username_by_pid(pid);
     if(username == NULL){
         printf("Não foi possivel encontrar o username do nº%d.", pid);
@@ -249,6 +377,37 @@ int armazena_messagem(const char *topic, int duracao, const char *msg, int pid) 
         }
     }
     return 1;
+}
+
+//Guarda mensagens do ficheiro em memória
+int recupera_mensagem(const char *topic, int duracao, const char *msg, char* username) {
+    for (int i = 0; i < topic_count; i++) {
+        if (strcmp(topics[i].topic_name, topic) == 0) {
+            if (topics[i].n_msgs >= MAX_MSG_PST){
+                fprintf(stderr, "Erro: Tópico '%s' atingiu o limite máximo de mensagens (%d).\n", topic, MAX_MSG_PST);
+                return 0; 
+            }
+                     
+            strncpy(topics[i].mensagens[topics[i].n_msgs].conteudo, msg, TAM_MSG - 1);
+            topics[i].mensagens[topics[i].n_msgs].conteudo[TAM_MSG - 1] = '\0';  
+
+            topics[i].mensagens[topics[i].n_msgs].tempExp = duracao;
+
+            strncpy(topics[i].mensagens[topics[i].n_msgs].autor, username, TAM_USR_TOP - 1);
+            topics[i].mensagens[topics[i].n_msgs].autor[TAM_USR_TOP - 1] = '\0';  
+
+            topics[i].n_msgs++;        
+        }
+    }
+    return 1;
+}
+
+//Remove mensagem de um tópico 
+void remove_message(Topic *topic, int index) {
+    for (int i = index; i < topic->n_msgs - 1; i++) {
+        topic->mensagens[i] = topic->mensagens[i + 1];
+    }
+    topic->n_msgs--;
 }
 
 //adiciona o topico
@@ -289,6 +448,13 @@ void handle_message(userRequest request){
     char *msg = strtok(NULL, "\0");
     
     Topic *topic_ptr = find_topic(topic);
+    if (topic_ptr == NULL) {
+        char npfifo[50];
+        snprintf(npfifo, sizeof(npfifo), NPCLIENT, request.pid);
+        send_message(npfifo, "<MANAGER> Tópico não encontrado.");
+        return;
+    }
+
     if (topic_ptr->locked) {
         char npfifo[50];
         sprintf(npfifo, NPCLIENT, request.pid);
@@ -297,7 +463,7 @@ void handle_message(userRequest request){
     }
 
     if(duracao > 0)
-        armazena_messagem(topic, duracao, msg, request.pid);
+        armazena_mensagem(topic, duracao, msg, request.pid);
 
     for (int i = 0; i < num_users; i++) {
         if (users[i].pid == request.pid) {
@@ -433,16 +599,20 @@ void send_topic_messages(Topic *topic_ptr, int pid) {
     }
 }
 
-void handle_exit(int pid) {
+void handle_exit(int pid, int exit_reason) {
     for (int i = 0; i < num_users; i++) {
         if (users[i].pid == pid) {
             printf("User '%s' offline.\n", users[i].username);
-            kill(users[i].pid, SIGINT);
+            printf("Saida: %d", exit_reason); 
+            if(exit_reason == 0){
+               kill(users[i].pid, SIGINT);
+            }                  
             for (int j = i; j < num_users - 1; j++) {
                 users[j] = users[j + 1];
             }
-            num_users--;          
+            num_users--; 
             return;
+           
         }
     }
     printf("Utilizador nº%d não encontrado.\n", pid);
@@ -452,7 +622,7 @@ void handle_exit(int pid) {
 void list_users() {
     printf("Utilizadores ativos:\n");
     for (int i = 0; i < num_users; i++) {
-        printf("- %s (%d)\n", users[i].username, users[i].pid);
+        printf("[%d]- %s (%d)\n", i+1, users[i].username, users[i].pid);
     }
 }
 
@@ -462,8 +632,13 @@ void remove_user(const char *username) {
         if (strcmp(users[i].username, username) == 0) {
             if(send_message(users[i].np_cliente, "<MANAGER> Foste removido pelo administrador. O programa irá encerrar.") == 0)
                 printf("Erro ao enviar mensagem ao user '%s'.\n", users[i].username);
-            kill(users[i].pid, SIGINT);
-            sleep(1);
+            
+            if(kill(users[i].pid, SIGINT) == -1 ){
+               perror("Erro ao enviar sinal para terminar o processo");
+            }
+
+            waitpid(users[i].pid, NULL, 0);
+
             printf("Utilizador '%s' removido.\n", users[i].username);
 
             for (int j = 0; j < num_users; j++) {
@@ -479,6 +654,7 @@ void remove_user(const char *username) {
             for (int j = i; j < num_users - 1; j++) {
                 users[j] = users[j + 1];
             }
+
             num_users--;
             return;
         }
@@ -490,7 +666,7 @@ void remove_user(const char *username) {
 void list_topics() {
     printf("Tópicos disponíveis:\n");
     for (int i = 0; i < topic_count; i++) {
-        printf("- %s (bloqueado: %s)\n", topics[i].topic_name, topics[i].locked ? "sim" : "não");
+        printf("- %s: (mensagens: %d)(bloqueado: %s)\n", topics[i].topic_name,topics[i].n_msgs, topics[i].locked ? "sim" : "não");
     }
 }
 
@@ -578,6 +754,7 @@ int validaComando(char *command){
             break;
         case 6: //close
             kill(getpid(), SIGINT);
+            //finalize_manager();
             break; 
     }
 
@@ -617,7 +794,8 @@ int main(){
         exit(EXIT_FAILURE);
     }
 
-    
+    initialize_manager();
+   
     pthread_mutex_t mutex;
     if (pthread_mutex_init(&mutex, NULL) != 0) {
         perror("Erro ao inicializar o mutex");
@@ -633,6 +811,11 @@ int main(){
         exit(EXIT_FAILURE);
     }
 
+    //criação da thread do ciclo de vida das msgs 
+    pthread_t lifecycle_thread;
+    pthread_create(&lifecycle_thread, NULL, manage_message_lifecycle, NULL);
+
+
     // Aguarda pela thread antes de continuar
     while (!ready) sleep(1);
 
@@ -644,6 +827,8 @@ int main(){
                 validaComando(comando);
             }  
     }
+
+    finalize_manager();
    
     // Encerra thread de login
     if(pthread_join(thread[0], NULL) != 0) {

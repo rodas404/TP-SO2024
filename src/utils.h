@@ -17,6 +17,7 @@ typedef struct{
     int type;
     int pid;
     char content[350];
+    int exit_reason; // 0: comando "exit", 1: Ctrl+C
 } userRequest;
 
 #endif

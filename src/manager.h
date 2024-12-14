@@ -37,12 +37,12 @@ typedef struct{
 
 
 
-void handle_exit(int pid);
+void handle_exit(int pid, int exit_reason);
 void *listen(void *dados);
 void show_messages(char *topico);
 void handle_message(userRequest request);
 int add_topic(const char *topic);
-int armazena_messagem(const char *topic, int duracao, const char *msg, int pid);
+int armazena_mensagem(const char *topic, int duracao, const char *msg, int pid);
 char* get_username_by_pid(int pid);
 int send_message(const char *fifo_name, const char *message);
 void handle_login(userRequest request);
@@ -61,5 +61,11 @@ Topic* find_topic(const char *topic_name);
 void send_topic_messages(Topic *topic_ptr, int pid);
 void acorda(int s, siginfo_t *info, void *c);
 void handle_topics(int pid);
-
+void remove_message(Topic *topic, int index);
+int recupera_mensagem(const char *topic, int duracao, const char *msg, char* username);
+void load_persistent_messages();
+void save_persistent_messages();
+void *manage_message_lifecycle(void *arg);
+void initialize_manager();
+void finalize_manager();
 #endif
