@@ -17,6 +17,7 @@ typedef struct {
     char topic_name[TAM_USR_TOP];
     int locked; // 0: desbloqueado, 1: bloqueado
     int n_msgs;
+    int n_subsTopic; // Número de subscritores ativos
     Mensagem mensagens[MAX_MSG_PST];
 } Topic;
 
@@ -36,36 +37,10 @@ typedef struct{
 
 
 
-
-void handle_exit(int pid, int exit_reason);
 void *listen(void *dados);
-void show_messages(char *topico);
-void handle_message(userRequest request);
-int add_topic(const char *topic);
-int armazena_mensagem(const char *topic, int duracao, const char *msg, int pid);
-char* get_username_by_pid(int pid);
-int send_message(const char *fifo_name, const char *message);
-void handle_login(userRequest request);
-int add_user(char *username, pid_t pid);
-void organizaComando(char *str);
-void handler_sigalrm(int s, siginfo_t *i, void *v);
-void list_users();
-void remove_user(const char *username);
-void list_topics();
-void toggle_topic_lock(const char *topic_name, int lock);
-void close_program();
+
 int validaComando(char *command);
-void handle_subscribe(userRequest request);
-void handle_unsubscribe(userRequest request);
-Topic* find_topic(const char *topic_name);
-void send_topic_messages(Topic *topic_ptr, int pid);
+
 void acorda(int s, siginfo_t *info, void *c);
-void handle_topics(int pid);
-void remove_message(Topic *topic, int index);
-int recupera_mensagem(const char *topic, int duracao, const char *msg, char* username);
-void load_persistent_messages();
-void save_persistent_messages();
-void *manage_message_lifecycle(void *arg);
-void initialize_manager();
-void finalize_manager();
+
 #endif
