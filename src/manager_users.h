@@ -11,7 +11,7 @@ int add_user(char *username, int pid);
 void handle_login(userRequest request);
 
 // Função para tratar a saída do utilizador
-void handle_exit(int pid, int exit_reason);
+void handle_exit(int pid);
 
 // Função para listar utilizadores ativos (comando "users" do Manager)
 void list_users();

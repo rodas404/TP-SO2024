@@ -2,7 +2,6 @@
 #include "feed.h"
 
 int running = 1;
-int exiting = 0; 
 
 char npCliente[50];
 
@@ -37,35 +36,31 @@ void *listen_manager(void *arg) {
 }
 
 void handler_sigalrm(int s, siginfo_t *i, void *v) {
-    if (exiting==1){
-        return; 
-    }
-
-    if (i->si_pid == 0){ //Saída provocada pelo utilizador 
-      userRequest request;
-      request.type = 4;  //"exit"
-      request.pid = getpid();
-      request.exit_reason = 1; //1 = saida com sigint 
-      snprintf(request.content, sizeof(request.content), "exit");
-
-      int fs = open(NPSERVER, O_WRONLY);
-      if (fs != -1) {
-          write(fs, &request, sizeof(userRequest));
-          close(fs);
-      } else {
+    userRequest request;
+    request.type = 4;  //"exit"
+    request.pid = getpid();
+    strcpy(request.content, "exit");
+    int fs = open(NPSERVER, O_WRONLY);
+    if (fs != -1) {
+        write(fs, &request, sizeof(userRequest));
+        if(close(fs) == -1)
+            perror("Erro ao fechar FIFO do server.\n");
+    } 
+    else 
         perror("Erro ao comunicar saída ao servidor.\n");
-       }
-      
-    }else{
-        exiting = 1; 
-        printf("\nAté à proxima!\n");
-    }
 
-   if(unlink(npCliente) == -1)
-      perror("Erro ao remover FIFO do feed.");
-      sleep(1);
-      exit(1);
+    handler_sigclose();   
 }
+
+void handler_sigclose(){
+    running = 0;
+    printf("\nAté à proxima!\n");
+    if(unlink(npCliente) == -1)
+         perror("Erro ao remover FIFO do feed.");
+    sleep(1);
+    exit(1);
+}
+
 
 int main(int argc, char *argv[]){
 
@@ -82,6 +77,9 @@ int main(int argc, char *argv[]){
     sa.sa_flags = SA_RESTART | SA_SIGINFO;
     sigaction(SIGINT, &sa, NULL);
 
+    struct sigaction act;
+    act.sa_sigaction=handler_sigclose;
+  	sigaction(SIGUSR1,&act,NULL); 
 
     /*Função para verficar se o manager está em execução */
 	if(access(NPSERVER, F_OK) != 0){
@@ -118,7 +116,7 @@ int main(int argc, char *argv[]){
      printf("[INFO] Conectado ao servidor.\n"); 
 
     request.type = 5; 
-    request.pid = getpid(); 
+    request.pid = login.pid;
     snprintf(request.content, sizeof(request.content), "LOGIN %s %s", login.username, npCliente);
 
     if (write(fs, &request, sizeof(userRequest)) == -1) {
@@ -178,10 +176,6 @@ int main(int argc, char *argv[]){
     if(request.type != -1){
         request.pid = getpid();
         strcpy(request.content, comando);
-
-        if (request.type == 4){
-            request.exit_reason = 0; //exit
-        }
         fs = open(NPSERVER, O_WRONLY);
         if(fs == -1){
             printf("Erro ao conectar com o servidor.\n");

@@ -73,7 +73,7 @@ int validaComando(char *command){
             }
             break;
         case 4: //exit
-            running = 0;
+            kill(getpid(), SIGINT);
             break;
     }
 

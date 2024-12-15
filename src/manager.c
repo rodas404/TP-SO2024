@@ -52,7 +52,7 @@ void *listen(void *dados) {
                             handle_unsubscribe(request);
                             break;
                     case 4:
-                        handle_exit(request.pid, request.exit_reason); 
+                        handle_exit(request.pid); 
                         break;
                     case 5: //login    
                         handle_login(request);

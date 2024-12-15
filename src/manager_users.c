@@ -79,20 +79,10 @@ void handle_login(userRequest request) {
 }
 
 // Função para tratar a saída do utilizador
-void handle_exit(int pid, int exit_reason) {
-    printf("Entrei para o pid: %d\n", pid); 
+void handle_exit(int pid) { 
     for (int i = 0; i < num_users; i++) {
         if (users[i].pid == pid) {
-            printf("User '%s' offline.\n", users[i].username);
-            printf("Saída: %d", exit_reason); 
-            if(exit_reason == 0){
-                if (kill(users[i].pid, SIGINT) == -1) {
-                    perror("Erro ao enviar sinal\n");
-                }
-               //kill(users[i].pid, SIGINT);
-               printf("mandei sair %d", users[i].pid); 
-            }                  
-
+            printf("User '%s' offline.\n", users[i].username);                      
             // Remove o utilizador da lista
             for (int j = i; j < num_users - 1; j++) {
                 users[j] = users[j + 1];
@@ -124,7 +114,7 @@ void remove_user(const char *username) {
             if (send_message(users[i].np_cliente, "<MANAGER> Foste removido pelo administrador. O programa irá encerrar.") == 0)
                 printf("Erro ao enviar mensagem ao user '%s'.\n", users[i].username);
             
-            if (kill(users[i].pid, SIGINT) == -1) {
+            if (kill(users[i].pid, SIGUSR1) == -1) {
                 perror("Erro ao enviar sinal para terminar o processo");
             }
 
@@ -136,7 +126,7 @@ void remove_user(const char *username) {
             for (int j = 0; j < num_users; j++) {
                 if (j != i) {
                     char notification[MAX_TAM_BUFFER];
-                    sprintf(notification, "Utilizador '%s' foi removido.", username);
+                    sprintf(notification, "<MANAGER> Utilizador '%s' foi removido.", username);
                     if (send_message(users[j].np_cliente, notification) == 0)
                         printf("Erro ao enviar notificação ao user '%s'.\n", users[j].username);
                 }
@@ -173,7 +163,7 @@ void close_program() {
 
     for (int i = 0; i < num_users; i++) {
         send_message(users[i].np_cliente, "<MANAGER> O manager foi encerrado. O programa irá terminar.");
-        kill(users[i].pid, SIGINT);
+        kill(users[i].pid, SIGUSR1);
     }
 }
 
