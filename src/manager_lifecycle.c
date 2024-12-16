@@ -24,7 +24,7 @@ void load_persistent_messages() {
         Mensagem msg;
         char topic_name[TAM_USR_TOP];
 
-       if (sscanf(line, "%s %s %d %[^\n]", topic_name, msg.autor, &msg.tempExp, msg.conteudo) != 4) {
+       if (sscanf(line, "%s %s %d %s[^\n]", topic_name, msg.autor, &msg.tempExp, msg.conteudo) != 4) {
            fprintf(stderr, "Linha mal formatada: %s", line);
            continue;
         }       
