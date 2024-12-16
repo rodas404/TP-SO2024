@@ -138,7 +138,7 @@ void send_topics(const char *fifo_name) {
 }
 
 /* Função para enviar todas as mensagens persistentes de um tópico para um feed */
-void send_topic_messages(Topic *topic_ptr, int pid) { //mesmo problema da função send_topics
+/*void send_topic_messages(Topic *topic_ptr, int pid) { //mesmo problema da função send_topics
     char npfifo[50];
     sprintf(npfifo, NPCLIENT, pid);
     for (int j = 0; j < topic_ptr->n_msgs; j++) {
@@ -148,7 +148,49 @@ void send_topic_messages(Topic *topic_ptr, int pid) { //mesmo problema da funç�
             return;
         }
     }
+}*/
+
+/* Função para enviar todas as mensagens persistentes de um tópico para um feed */
+void send_topic_messages(Topic *topic_ptr, int pid) { 
+    char message[MAX_TAM_BUFFER];
+    size_t message_size;
+
+    char npfifo[50];
+    sprintf(npfifo, NPCLIENT, pid);
+
+    // Se o tópico não tiver mensagens, informa ao feed
+    if (topic_ptr->n_msgs == 0) {
+        sprintf(message, "<MANAGER> Subscreveu ao tópico %s com sucesso.\n",topic_ptr->topic_name);
+
+        if (send_message(npfifo, message) == 0) {
+            printf("Erro ao enviar mensagem ao user nº%d\n", pid);
+            return;
+        }
+        return;
+    }
+
+    message_size = snprintf(message, sizeof(message), "Mensagens do tópico '%s':\n", topic_ptr->topic_name);
+
+    for (int j = 0; j < topic_ptr->n_msgs; j++) {
+        message_size += snprintf(message + message_size, sizeof(message) - message_size,
+                                  "<%s> %s - %s\n", 
+                                  topic_ptr->topic_name, 
+                                  topic_ptr->mensagens[j].autor, 
+                                  topic_ptr->mensagens[j].conteudo);
+
+        if (message_size >= sizeof(message)) {
+            printf("Erro: Tamanho total da mensagem ultrapassou o limite de buffer.\n");
+            break;
+        }
+    }
+
+    // Envia todas as mensagens concatenadas de uma vez
+    if (send_message(npfifo, message) == 0) {
+        printf("Erro ao enviar mensagens ao user nº%d\n", pid);
+        return;
+    }
 }
+
 
 /* Função para tratar o pedido de subscrição de um tópico por um utilizador*/
 void handle_subscribe(userRequest request) {
@@ -183,13 +225,12 @@ void handle_subscribe(userRequest request) {
             users[i].n_subs++;
             
             printf("Utilizador '%s' subscreveu ao tópico '%s'.\n", users[i].username, topic);
-            sprintf(message, "<MANAGER> Subscreveu ao tópico %s com sucesso.", topic);
-            send_message(npfifo, message);
-
+           
             // Adiciona +1 subscrição ao tópico
             for (int t = 0; t < topic_count; t++) {
                 if (strcmp(topics[t].topic_name, topic) == 0) {
                     topics[t].n_subsTopic++;
+                    send_topic_messages(topic_ptr, request.pid);
                     if (topics[t].n_subsTopic == 1)
                         printf("O tópico %s tem agora %d subscrição.\n", topic, topics[t].n_subsTopic);                
                     else 
@@ -201,8 +242,6 @@ void handle_subscribe(userRequest request) {
             break;
         }
     }
-
-    send_topic_messages(topic_ptr, request.pid);
 }
 
 /* Função para tratar o pedido de cancelamento de subscrição de um tópico */
